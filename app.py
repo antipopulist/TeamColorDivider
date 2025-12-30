@@ -1,3 +1,6 @@
+# To run this do (in the console)
+# streamlit run app.py
+
 import streamlit as st
 import random
 import colorsys
@@ -75,6 +78,53 @@ st.markdown("""
         font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
         margin-bottom: 5px; color: #888;
     }
+
+    /* RTS Map */
+    .rts-map {
+        position: relative;
+        width: 100%;
+        height: 360px;
+        background:
+            radial-gradient(circle at 20% 20%, rgba(0, 255, 255, 0.06), transparent 40%),
+            radial-gradient(circle at 80% 80%, rgba(255, 68, 68, 0.06), transparent 40%),
+            linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px),
+            #050505;
+        background-size: auto, auto, 30px 30px, 30px 30px, auto;
+        border: 1px solid #222;
+        box-shadow: inset 0 0 20px rgba(0,0,0,0.8);
+        overflow: hidden;
+    }
+
+    .unit-dot {
+        position: absolute;
+        width: 10px;
+        height: 10px;
+        transform: translate(-50%, -50%);
+        border: 1px solid rgba(255,255,255,0.4);
+        box-shadow: 0 0 6px rgba(0,0,0,0.6);
+    }
+
+    .unit-attacker { box-shadow: 0 0 8px #00ffff, 0 0 12px #00ffff; }
+    .unit-hit { animation: hitFlash 0.25s; }
+    .unit-spawn { animation: spawnPop 0.4s; }
+    .unit-dead { animation: unitDie 0.6s forwards; }
+
+    @keyframes hitFlash {
+        0% { transform: translate(-50%, -50%) scale(1.2); box-shadow: 0 0 10px #ff4444; }
+        100% { transform: translate(-50%, -50%) scale(1.0); box-shadow: 0 0 6px rgba(0,0,0,0.6); }
+    }
+
+    @keyframes spawnPop {
+        0% { transform: translate(-50%, -50%) scale(0.2); opacity: 0.0; }
+        80% { transform: translate(-50%, -50%) scale(1.2); opacity: 1.0; }
+        100% { transform: translate(-50%, -50%) scale(1.0); opacity: 1.0; }
+    }
+
+    @keyframes unitDie {
+        0% { transform: translate(-50%, -50%) scale(1.0); opacity: 1.0; }
+        100% { transform: translate(-50%, -50%) scale(0.2); opacity: 0.0; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -92,6 +142,14 @@ COMMON_COLORS = [
 # UPDATED: Added Legion
 FACTIONS = ["Armada", "Cortex", "Legion"]
 
+MAP_WIDTH = 640
+MAP_HEIGHT = 360
+FIRE_RANGE = 90
+MIN_SEPARATION = 18
+SEPARATION_FORCE = 2.4
+HARD_MIN_SEPARATION = 18
+SPAWN_FLASH_TICKS = 2
+DEATH_FLASH_TICKS = 2
 
 # ---------------------------------------------------------
 # 3. HELPER FUNCTIONS
@@ -146,6 +204,120 @@ def sort_players_perceptually(players):
             return (1, h, v)
 
     return sorted(players, key=sort_key)
+
+
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def initialize_positions(teams, width, height, margin=18):
+    positions = {}
+    if not teams:
+        return positions
+
+    band_width = width / max(1, len(teams))
+    for t_idx, team in enumerate(teams):
+        x_min = t_idx * band_width + margin
+        x_max = (t_idx + 1) * band_width - margin
+        if x_max <= x_min:
+            x_min = margin
+            x_max = width - margin
+        for p in team:
+            positions[p['id']] = {
+                'x': random.uniform(x_min, x_max),
+                'y': random.uniform(margin, height - margin)
+            }
+    return positions
+
+
+def get_closest_enemy(pid, alive_ids, p_team_map, positions):
+    best_id = None
+    best_dist = None
+    for other_id in alive_ids:
+        if p_team_map[other_id] == p_team_map[pid]:
+            continue
+        dx = positions[other_id]['x'] - positions[pid]['x']
+        dy = positions[other_id]['y'] - positions[pid]['y']
+        dist = dx * dx + dy * dy
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best_id = other_id
+    return best_id
+
+
+def step_positions(
+    alive_ids,
+    p_team_map,
+    positions,
+    width,
+    height,
+    speed=3.2,
+    jitter=0.6,
+    margin=10,
+    min_sep=MIN_SEPARATION,
+    sep_force=SEPARATION_FORCE,
+    hard_min=HARD_MIN_SEPARATION
+):
+    for pid in alive_ids:
+        target_id = get_closest_enemy(pid, alive_ids, p_team_map, positions)
+        if not target_id:
+            continue
+        dx = positions[target_id]['x'] - positions[pid]['x']
+        dy = positions[target_id]['y'] - positions[pid]['y']
+        dist = math.hypot(dx, dy)
+        if dist == 0:
+            continue
+        nx = dx / dist
+        ny = dy / dist
+
+        repulse_x = 0.0
+        repulse_y = 0.0
+        if min_sep > 0:
+            for other_id in alive_ids:
+                if other_id == pid:
+                    continue
+                ox = positions[pid]['x'] - positions[other_id]['x']
+                oy = positions[pid]['y'] - positions[other_id]['y']
+                o_dist = math.hypot(ox, oy)
+                if 0 < o_dist < min_sep:
+                    scale = (min_sep - o_dist) / min_sep
+                    repulse_x += (ox / o_dist) * scale
+                    repulse_y += (oy / o_dist) * scale
+
+        positions[pid]['x'] = clamp(
+            positions[pid]['x'] + nx * speed + repulse_x * sep_force + random.uniform(-jitter, jitter),
+            margin,
+            width - margin
+        )
+        positions[pid]['y'] = clamp(
+            positions[pid]['y'] + ny * speed + repulse_y * sep_force + random.uniform(-jitter, jitter),
+            margin,
+            height - margin
+        )
+
+        if hard_min > 0:
+            for other_id in alive_ids:
+                if other_id == pid:
+                    continue
+                ox = positions[pid]['x'] - positions[other_id]['x']
+                oy = positions[pid]['y'] - positions[other_id]['y']
+                o_dist = math.hypot(ox, oy)
+                if o_dist == 0:
+                    ox = random.uniform(-1.0, 1.0)
+                    oy = random.uniform(-1.0, 1.0)
+                    o_dist = math.hypot(ox, oy)
+                if o_dist < hard_min:
+                    push = (hard_min - o_dist) / o_dist
+                    positions[pid]['x'] = clamp(
+                        positions[pid]['x'] + ox * push,
+                        margin,
+                        width - margin
+                    )
+                    positions[pid]['y'] = clamp(
+                        positions[pid]['y'] + oy * push,
+                        margin,
+                        height - margin
+                    )
 
 
 # ---------------------------------------------------------
@@ -288,14 +460,20 @@ with tab1:
 
 with tab2:
     start_battle = st.button("🔴 INITIALIZE COMBAT", use_container_width=True)
+    show_log = st.checkbox("Show battle log", value=False)
 
     log_placeholder = st.empty()
+    map_placeholder = st.empty()
     arena_placeholder = st.empty()
 
     if start_battle:
         # Battle State
-        sim_state = {p['id']: {'hp': 100, 'en': 50} for p in players}
+        sim_state = {
+            p['id']: {'hp': 100, 'en': 50, 'spawn_tick': 0, 'death_tick': None}
+            for p in players
+        }
         p_team_map = {p['id']: i for i, tm in enumerate(teams_list) for p in tm}
+        positions = initialize_positions(teams_list, MAP_WIDTH, MAP_HEIGHT)
 
         battle_active = True
         tick = 0
@@ -316,6 +494,7 @@ with tab2:
                 msg = f"GAME OVER. TEAM {winner_idx + 1} VICTORY." if winner_idx != -1 else "DRAW. MUTUAL ANNIHILATION."
                 logs.append(f"<span style='color:#00ff00'> >> {msg}</span>")
             else:
+                step_positions(alive_ids, p_team_map, positions, MAP_WIDTH, MAP_HEIGHT)
                 for pid in alive_ids:
                     sim_state[pid]['en'] = min(100, sim_state[pid]['en'] + 5)
 
@@ -325,48 +504,94 @@ with tab2:
 
                 enemies = [pid for pid in alive_ids if p_team_map[pid] != att_team]
                 if enemies:
-                    vic_id = random.choice(enemies)
-                    active_victim = vic_id
+                    vic_id = get_closest_enemy(att_id, alive_ids, p_team_map, positions) or random.choice(enemies)
+                    if vic_id is not None:
+                        dx = positions[vic_id]['x'] - positions[att_id]['x']
+                        dy = positions[vic_id]['y'] - positions[att_id]['y']
+                        dist = math.hypot(dx, dy)
+                        if dist <= FIRE_RANGE:
+                            active_victim = vic_id
+                            current_en = sim_state[att_id]['en']
 
-                    current_en = sim_state[att_id]['en']
+                            if current_en >= 100 and random.random() < 0.3:
+                                dmg = 9999
+                                sim_state[att_id]['en'] = 0
+                                event_type = "dgun"
+                                log_cls = "log-dgun"
+                                wpn_name = "D-GUN"
+                            else:
+                                dmg = random.randint(10, 25)
+                                sim_state[att_id]['en'] = max(0, current_en - 10)
+                                event_type = "attack"
+                                log_cls = ""
+                                wpn_name = "Laser"
 
-                    if current_en >= 100 and random.random() < 0.3:
-                        dmg = 9999
-                        sim_state[att_id]['en'] = 0
-                        event_type = "dgun"
-                        log_cls = "log-dgun"
-                        wpn_name = "D-GUN"
-                    else:
-                        dmg = random.randint(10, 25)
-                        sim_state[att_id]['en'] = max(0, current_en - 10)
-                        event_type = "attack"
-                        log_cls = ""
-                        wpn_name = "Laser"
+                            sim_state[vic_id]['hp'] -= dmg
 
-                    sim_state[vic_id]['hp'] -= dmg
+                            att_hex = next(p['hex'] for p in players if p['id'] == att_id)
+                            vic_hex = next(p['hex'] for p in players if p['id'] == vic_id)
 
-                    att_hex = next(p['hex'] for p in players if p['id'] == att_id)
-                    vic_hex = next(p['hex'] for p in players if p['id'] == vic_id)
+                            log_entry = (
+                                f"[{tick}] <span style='color:{att_hex}'>COM_{att_id}</span> "
+                                f"fires {wpn_name} >> <span style='color:{vic_hex}'>COM_{vic_id}</span> "
+                                f"(-{dmg} HP)"
+                            )
 
-                    log_entry = (
-                        f"[{tick}] <span style='color:{att_hex}'>COM_{att_id}</span> "
-                        f"fires {wpn_name} >> <span style='color:{vic_hex}'>COM_{vic_id}</span> "
-                        f"(-{dmg} HP)"
-                    )
+                            if event_type == "dgun":
+                                log_entry = f"<span class='log-dgun'>{log_entry}</span>"
 
-                    if event_type == "dgun":
-                        log_entry = f"<span class='log-dgun'>{log_entry}</span>"
+                            if sim_state[vic_id]['hp'] <= 0:
+                                sim_state[vic_id]['hp'] = 0
+                                sim_state[vic_id]['death_tick'] = tick
+                                log_entry += " <span class='log-kill'>[COMBLAST]</span>"
+                                active_victim = vic_id
+                                event_type = "die"
 
-                    if sim_state[vic_id]['hp'] <= 0:
-                        log_entry += " <span class='log-kill'>[COMBLAST]</span>"
-                        active_victim = vic_id
-                        event_type = "die"
+                            logs.append(log_entry)
 
-                    logs.append(log_entry)
+            if len(logs) > 50:
+                logs = logs[-50:]
+            if show_log:
+                reversed_logs = "<br>".join(logs[::-1])
+                log_placeholder.markdown(f'<div class="battle-log">{reversed_logs}</div>', unsafe_allow_html=True)
+            else:
+                log_placeholder.empty()
 
-            if len(logs) > 50: logs = logs[-50:]
-            reversed_logs = "<br>".join(logs[::-1])
-            log_placeholder.markdown(f'<div class="battle-log">{reversed_logs}</div>', unsafe_allow_html=True)
+            map_html = "<div class='rts-map'>"
+            for p in players:
+                pid = p['id']
+                s = sim_state[pid]
+                pos = positions[pid]
+                is_alive = s['hp'] > 0
+                death_tick = s['death_tick']
+                show_unit = is_alive or (death_tick is not None and (tick - death_tick) <= DEATH_FLASH_TICKS)
+                if not show_unit:
+                    continue
+
+                classes = ["unit-dot"]
+                if is_alive and (tick - s['spawn_tick']) <= SPAWN_FLASH_TICKS:
+                    classes.append("unit-spawn")
+                if is_alive and pid == active_attacker:
+                    classes.append("unit-attacker")
+                if is_alive and pid == active_victim:
+                    classes.append("unit-hit")
+                if not is_alive:
+                    classes.append("unit-dead")
+
+                if p['faction'] == "Cortex":
+                    radius = "0px"
+                elif p['faction'] == "Legion":
+                    radius = "50%"
+                else:
+                    radius = "3px"
+
+                map_html += (
+                    f"<div class='{' '.join(classes)}' "
+                    f"style='left:{pos['x']:.1f}px; top:{pos['y']:.1f}px; "
+                    f"background:{p['hex']}; border-radius:{radius};'></div>"
+                )
+            map_html += "</div>"
+            map_placeholder.markdown(map_html, unsafe_allow_html=True)
 
             arena_html = "<div style='display:flex; flex-wrap:wrap; gap:15px; justify-content:center;'>"
             for t_idx, team in enumerate(teams_list):
