@@ -1,5 +1,3 @@
-# to run, in the console do: streamlit run app.py
-
 import streamlit as st
 import random
 import colorsys
@@ -9,7 +7,6 @@ import math
 # 1. CONSTANTS & PREDEFINED COLORS (The "First 32")
 # ---------------------------------------------------------
 
-# A manually curated list of 32 distinct, recognizable colors
 COMMON_COLORS = [
     "#FF0000", "#0000FF", "#00FF00", "#FFFF00", "#800080", "#FFA500", "#00FFFF", "#FF00FF",
     # Red, Blue, Green, Yellow, Purple, Orange, Cyan, Magenta
@@ -39,10 +36,7 @@ def get_hsv(hex_code):
 
 
 def color_distance(hex1, hex2):
-    """
-    Calculates Euclidean distance between two colors in RGB space.
-    Returns a value between 0.0 (identical) and ~1.73 (max distance).
-    """
+    """Calculates Euclidean distance between two colors in RGB space."""
     r1, g1, b1 = hex_to_rgb(hex1)
     r2, g2, b2 = hex_to_rgb(hex2)
     return math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2)
@@ -51,18 +45,15 @@ def color_distance(hex1, hex2):
 def generate_distinct_color(existing_hexes):
     """
     Generates a random color that is not too similar to any color in the existing list.
-    Uses an adaptive threshold that shrinks if it struggles to find a spot.
+    Uses an adaptive threshold.
     """
-    # Start with a strict threshold (colors must be ~20% different)
     threshold = 0.25
     max_attempts = 50
     attempts = 0
 
     while True:
-        # Generate random Candidate
         candidate = "#{:06x}".format(random.randint(0, 0xFFFFFF))
 
-        # Check against ALL existing colors
         is_distinct = True
         for existing in existing_hexes:
             if color_distance(candidate, existing) < threshold:
@@ -72,13 +63,10 @@ def generate_distinct_color(existing_hexes):
         if is_distinct:
             return candidate
 
-        # If we failed, increment counter
         attempts += 1
-
-        # If we are stuck, lower the standards (compress the colors)
         if attempts > max_attempts:
-            threshold *= 0.90  # Reduce required distance by 10%
-            attempts = 0  # Reset counter for the new threshold
+            threshold *= 0.90
+            attempts = 0
 
 
 def chunk_list(data, num_chunks):
@@ -92,23 +80,16 @@ def chunk_list(data, num_chunks):
 # ---------------------------------------------------------
 
 def sort_players_perceptually(players):
-    """
-    Sorts a flat list of players so similar colors are adjacent.
-    """
+    """Sorts players: Grayscale/Blacks first, then Colors by Hue."""
 
     def sort_key(player):
         h, s, v = get_hsv(player['hex'])
 
-        # Thresholds to decide if a color is "grayish" or "black"
-        # If Saturation is very low, it looks white/gray
-        # If Value is very low, it looks black
         is_grayscale = s < 0.15 or v < 0.15
 
         if is_grayscale:
-            # Group 0: Grayscale. Sort these by brightness (v)
             return (0, v, 0)
         else:
-            # Group 1: Colors. Sort these by Hue (h)
             return (1, h, v)
 
     return sorted(players, key=sort_key)
@@ -126,7 +107,6 @@ def render_player_grid(player_list):
     items_html = ""
     for p in player_list:
         rgb = hex_to_rgb(p['hex'])
-        # Dynamic text color (black/white) for contrast
         brightness = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000
         text_color = "black" if brightness > 0.6 else "white"
 
@@ -143,16 +123,18 @@ def render_player_grid(player_list):
 
 st.set_page_config(page_title="Team Auto-Balancer", layout="wide")
 st.title("⚔️ Smart Team Balancer")
-st.markdown(
-    "Groups players into teams based on color similarity. Adapts to high player counts by compressing color space.")
+st.markdown("Groups players into teams based on color similarity.")
 
 # --- SIDEBAR ---
 st.sidebar.header("Configuration")
 
-# Defaults changed to 32 players, 2 teams
 total_players = st.sidebar.slider("Total Players", min_value=2, max_value=100, value=32)
 num_teams = st.sidebar.slider("Number of Teams", min_value=2, max_value=20, value=2)
+
 regenerate = st.sidebar.button("Regenerate / Reset")
+# NEW TEXT ADDED HERE
+st.sidebar.caption(
+    "🔒 **Note:** The first 32 colors are locked to a standard palette. This button only randomizes players 33+.")
 
 
 # --- STATE MANAGEMENT ---
@@ -170,7 +152,6 @@ def initialize_players(n):
     if n > limit:
         current_hexes = [p['hex'] for p in new_players]
         for i in range(limit, n):
-            # Generate a color distinct from ALL previous
             new_hex = generate_distinct_color(current_hexes)
             new_players.append({"id": str(i + 1), "hex": new_hex})
             current_hexes.append(new_hex)
@@ -178,23 +159,23 @@ def initialize_players(n):
     return new_players
 
 
-# 1. Logic to handle state initialization or regeneration
+# 1. Handle Initialization or Regenerate Click
 if 'players' not in st.session_state or regenerate:
     st.session_state.players = initialize_players(total_players)
 
-# 2. Logic to handle Slider movement (Add/Remove players without full reset)
+# 2. Handle Slider Movement (Add/Remove without full reset)
 elif len(st.session_state.players) != total_players:
     current_list = st.session_state.players
     current_count = len(current_list)
 
     if total_players < current_count:
-        # User reduced slider: Trim list
+        # User reduced slider: Trim
         st.session_state.players = current_list[:total_players]
     else:
-        # User increased slider: Add new distinct players
+        # User increased slider: Add
         current_hexes = [p['hex'] for p in current_list]
         for i in range(current_count, total_players):
-            # Check if we are still within the "Common" range (e.g. user went 10 -> 25)
+            # Check if we are filling back into the "Common" range
             if i < len(COMMON_COLORS):
                 new_hex = COMMON_COLORS[i]
             else:
@@ -207,10 +188,7 @@ players = st.session_state.players
 
 # --- PROCESSING ---
 
-# 1. Sort all players by color
 sorted_players = sort_players_perceptually(players)
-
-# 2. Slice into Teams
 teams_list = chunk_list(sorted_players, num_teams)
 
 # --- VISUALIZATION ---
@@ -219,15 +197,10 @@ col_left, col_right = st.columns([1, 2])
 
 with col_left:
     st.subheader(f"Player Pool ({total_players})")
-    if total_players <= 32:
-        st.caption("Using **Standard Distinct Colors**.")
-    else:
-        st.caption("Using **Standard** + **Adaptive Random** colors.")
     render_player_grid(players)
 
 with col_right:
     st.subheader(f"Formed Teams ({num_teams})")
-    st.caption("Algorithm: HSV Sort + Grayscale Separation")
 
     for i, team_members in enumerate(teams_list):
         count = len(team_members)
